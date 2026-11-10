@@ -1,0 +1,256 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSV to JSON</title>
+</head>
+<body>
+
+    <h1>Kyle Jayverson Baguio</h1>
+    <h3><i>IT 3206N TTH 3:00-5:30</i></h3>
+
+    <br>
+
+    <h1>CSV to JSON</h1>
+
+    <h2>1. Upload Source CSV Files</h2>
+
+    <p>Student Information System (SIS):</p>
+    <input type="file" id="sisFile" accept=".csv">
+
+    <p>Learning Management System (LMS):</p>
+    <input type="file" id="lmsFile" accept=".csv">
+
+    <p>Accounting System:</p>
+    <input type="file" id="accountFile" accept=".csv">
+
+    <br><br>
+
+    <button onclick="runETL()">RUN ETL</button>
+
+    <p id="message">Upload the three CSV files and click RUN ETL.</p>
+
+    <h2>2. JSON Output (For integrated students)</h2>
+
+    <pre id="output">Upload the CSV files and click RUN ETL.</pre>
+
+    <button onclick="downloadJSON()">Download JSON</button>
+
+<script>
+
+let jsonResult = [];
+
+function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let value = "";
+    let quoted = false;
+
+    text = text.replace(/^\uFEFF/, "");
+
+    for (let i = 0; i < text.length; i++) {
+        let c = text[i];
+
+        if (c === '"') {
+            if (quoted && text[i + 1] === '"') {
+                value += '"';
+                i++;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (c === "," && !quoted) {
+            row.push(value);
+            value = "";
+        } else if ((c === "\n" || c === "\r") && !quoted) {
+            if (c === "\r" && text[i + 1] === "\n") i++;
+            row.push(value);
+            if (row.some(v => v.trim() !== "")) rows.push(row);
+            row = [];
+            value = "";
+        } else {
+            value += c;
+        }
+    }
+
+    if (quoted) throw new Error("Invalid CSV quotation.");
+
+    row.push(value);
+    if (row.some(v => v.trim() !== "")) rows.push(row);
+
+    if (rows.length < 2) throw new Error("CSV is empty.");
+
+    const headers = rows[0].map(h => h.trim());
+
+    return rows.slice(1).map(r => {
+        let obj = {};
+        headers.forEach((h, i) => obj[h] = (r[i] || "").trim());
+        return obj;
+    });
+}
+
+function properCase(str) {
+    return str.trim().toLowerCase()
+        .replace(/\b[a-z]/g, c => c.toUpperCase());
+}
+
+function normalizeGrade(value) {
+    let v = value.trim();
+    if (v === "") return null;
+
+    if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(v)) {
+        let n = Number(v);
+        if (Number.isFinite(n)) return n;
+    }
+
+    return v.toUpperCase();
+}
+
+function normalizeBalance(value) {
+    let v = value.trim();
+    if (v === "") return null;
+
+    let negative = /^\(.*\)$/.test(v);
+
+    v = v.replace(/[(),\s]/g, "")
+         .replace(/[₱$€£]/g, "");
+
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(v)) {
+        throw new Error("Invalid account balance: " + value);
+    }
+
+    let n = Number(v);
+
+    if (!Number.isFinite(n)) throw new Error("Invalid balance.");
+
+    return negative ? -n : n;
+}
+
+function normalizeID(value) {
+    let n = Number(value.trim());
+
+    if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(n)) {
+        throw new Error("Invalid student ID: " + value);
+    }
+
+    return n;
+}
+
+function runETL() {
+    try {
+        let sisFile = document.getElementById("sisFile").files[0];
+        let lmsFile = document.getElementById("lmsFile").files[0];
+        let accountFile = document.getElementById("accountFile").files[0];
+
+        if (!sisFile || !lmsFile || !accountFile) {
+            throw new Error("Please upload all three CSV files.");
+        }
+
+        Promise.all([
+            sisFile.text(),
+            lmsFile.text(),
+            accountFile.text()
+        ]).then(([sisText, lmsText, accountText]) => {
+
+            let sis = parseCSV(sisText);
+            let lms = parseCSV(lmsText);
+            let accounting = parseCSV(accountText);
+
+            let programs = {
+                BSIT: "Bachelor of Science in Information Technology",
+                BSCS: "Bachelor of Science in Computer Science",
+                BSIS: "Bachelor of Science in Information Systems"
+            };
+
+            let lmsMap = {};
+            let accountMap = {};
+
+            lms.forEach(record => {
+                let id = normalizeID(record.student_id);
+
+                if (!lmsMap[id]) lmsMap[id] = [];
+
+                let status = record.completion_status.trim();
+
+                lmsMap[id].push({
+                    courseCode: record.course_code.trim().toUpperCase(),
+                    finalGrade: normalizeGrade(record.final_grade),
+                    completionStatus: status
+                        ? properCase(status)
+                        : null
+                });
+            });
+
+            accounting.forEach(record => {
+                let id = normalizeID(record.student_id);
+
+                if (!accountMap[id]) accountMap[id] = [];
+
+                accountMap[id].push({
+                    outstandingBalance: normalizeBalance(record.account_balance),
+                    currency: record.currency.trim().toUpperCase()
+                });
+            });
+
+            
+jsonResult = sis.map(student => {
+
+    let id = normalizeID(student.student_id);
+    let code = student.program_code.trim().toUpperCase();
+
+    let lmsRecord = lmsMap[id] ? lmsMap[id][0] : null;
+    let accountRecord = accountMap[id] ? accountMap[id][0] : null;
+
+    return {
+        studentId: id,
+
+        studentName: properCase(student.student_name),
+
+        program: programs[code] || code,
+
+        emailAddress: student.email.trim().toLowerCase(),
+
+        lms: lmsRecord,
+
+        accounting: accountRecord
+    };
+});
+
+
+            document.getElementById("output").textContent =
+                JSON.stringify(jsonResult, null, 4);
+
+            document.getElementById("message").textContent =
+                "ETL completed successfully! Total students: " + jsonResult.length;
+
+        }).catch(error => {
+            document.getElementById("message").textContent = error.message;
+        });
+
+    } catch (error) {
+        document.getElementById("message").textContent = error.message;
+    }
+}
+
+function downloadJSON() {
+    if (!jsonResult.length) {
+        alert("Run ETL first.");
+        return;
+    }
+
+    let blob = new Blob(
+        [JSON.stringify(jsonResult, null, 4)],
+        {type: "application/json"}
+    );
+
+    let link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "integrated_student_data.json";
+    link.click();
+
+    URL.revokeObjectURL(link.href);
+}
+
+</script>
+
+</body>
+</html>
